@@ -1,0 +1,62 @@
+TWEETS2PDF --- Backup your tweets into FANTANSTIC PDF files
+
+1. OS SUPPORTED
+-------------
+Linux, Windows, Mac OS(will support)
+
+2. REQUIRES:
+------------
+python-reportlab
+PIL(python-imaging-library)
+pyGtk
+
+How to install these libraries in Linux ? 
+----------------------------------------
+sudo apt-get install python-reportlab
+sudo apt-get install python-imaging
+pyGtk might has been installed, no need to install it any more.
+
+3. DOWNLOAD TWEETS2PDF
+----------------------
+Download the tarball from the download list:
+
+	http://code.google.com/p/tweets2pdf/downloads/list
+
+You can also checkout the lastest version from the repo:
+
+	hg clone https://tweets2pdf.googlecode.com/hg/ tweets2pdf 
+
+4. HOW TO INSTALL
+-----------------
+Linux:
+
+	# tar xzf tweets2pdf-{version}.tar.gz
+	# cd tweet2pdf-{version}
+	# sudo python setup.py install
+	# tweets2pdf
+
+then you will see the GUI of tweets2pdf.
+	
+if you've install older version of tweets2pdf, maybe you need to
+remove the older lib first, the way to remove it is:
+
+	# sudo rm /usr/lib/python2.6/site-packages/tweets2pdf-0.2.0-py2.6.egg-info
+
+Windows:
+	
+	The code performs well in windows, but we only provite 
+standalone package for windows7, porting to other version of 
+windows is welcome
+
+5. YOU NEED TO KNOW
+-------------------
+	1. Twitter has API limitation every hour, so sometimes
+ you can not get enough data you want, but we make it try
+ as many times as we can, until it runs out.
+
+	2. You can only fetch your lastest 3200 tweets because of
+the limitation of the API.
+
+	3. For the first time you run tweets2pdf, you need to complete 
+the configuration first, go to 'Preference', and specify a font file,
+and then save it.

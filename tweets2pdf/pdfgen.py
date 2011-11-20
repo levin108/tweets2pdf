@@ -1,0 +1,619 @@
+#!/usr/bin/python
+# -*- coding:utf8 -*-
+"""
+Copyright (C) 2011 by lwp
+levin108@gmail.com
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the
+Free Software Foundation, Inc.,
+51 Franklin Street, Suite 500, Boston, MA 02110-1335, USA.
+"""
+
+import sys
+import urllib, urllib2
+import os, re, time
+import threading
+import types
+from xml.dom import minidom
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import *
+from reportlab.lib import colors
+from reportlab.lib import fonts
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.units import inch
+from reportlab.rl_config import defaultPageSize
+import twitter
+import oauthapi
+import template
+import config
+
+TWEETS_MY_TIMELINE      = 1
+TWEETS_MY_RETWEETED     = 2
+TWEETS_RETWEETED_BY_ME  = 3
+TWEETS_OTHERS_TIMELINE  = 4
+TWEETS_MY_FAVORITES     = 5
+TWEETS_OTHERS_FAVORITES = 6
+
+status_welcome_message               = '1'
+status_fetch_user_information        = '2'
+status_fetch_followers               = '3'
+status_fetch_friends                 = '4'
+status_fetch_followers_profile_image = '5'
+status_fetch_friends_profile_image   = '5'
+status_fetch_tweets                  = '7'
+status_fetch_profile_image           = '8'
+status_create_pdf                    = '9'
+status_done                          = '10'
+
+status_dic = {
+    status_welcome_message:               " Welcome to use tweets2pdf",
+    status_fetch_user_information:        " Fetching user information...",
+    status_fetch_followers:               " Fetching followers...",
+    status_fetch_friends:                 " Fetching friends...",
+    status_fetch_followers_profile_image: " Fetching followers' profile image...",
+    status_fetch_friends_profile_image:   " Fetching friends' profile image...",
+    status_fetch_tweets:                  " Fetching tweets...",
+    status_fetch_profile_image:           " Fetching profile image...",
+    status_create_pdf:                    " Creating pdf...",
+    status_done:                          " Done"
+}
+
+PAGE_WIDTH  = defaultPageSize[0]
+PAGE_HEIGHT = defaultPageSize[1]
+
+def wrap(self, availWidth, availHeight):
+    # work out widths array for breaking
+    self.width       = availWidth
+    leftIndent       = self.style.leftIndent
+    first_line_width = availWidth - (leftIndent+self.style.firstLineIndent) - self.style.rightIndent
+    later_widths     = availWidth - leftIndent - self.style.rightIndent
+    try:
+        self.blPara = self.breakLinesCJK([first_line_width, later_widths])
+    except:
+        self.blPara = self.breakLines([first_line_width, later_widths])
+
+    self.height = len(self.blPara.lines) * self.style.leading
+    return (self.width, self.height)
+
+Paragraph.wrap = wrap
+
+def fetch_image_thread(param):
+    global mutex
+    global portrait_already_got
+
+    user = param[0]
+    oauth_client = param[1]
+
+    oauth_client.fetch_profile_image(screen_name = user.screen_name,
+            size = 'normal',
+            file_type = user.image_type)
+    mutex.acquire()
+    portrait_already_got += 1
+    mutex.release()
+
+    param[3].update_progress('%d/%d' % (portrait_already_got, param[2]), float(portrait_already_got)/float(param[2]))
+
+    mutex.acquire()
+    if portrait_already_got == param[2]:
+        mutex.release()
+        param[3].update_progress('%d/%d' % (param[2], param[2]), 1)
+    else:
+        mutex.release()
+        
+class tp_document():
+
+    def __init__(self, oauth_client = {},                 \
+            screen_name             = None,               \
+            tweets_count            = None,               \
+            tweets_type             = TWEETS_MY_TIMELINE, \
+            tweets_max_id           = {},                 \
+            tweets_min_id           = {},                 \
+            has_cover               = True,               \
+            pdf_name                = None,               \
+            pdf_title               = None,               \
+            font_path               = {},                 \
+            link_color              = 'blue',             \
+            pdf_img_size            = 32,                 \
+            main_panel              = None):
+
+        if screen_name:
+            self.screen_name = screen_name
+        else:
+            self.screen_name = oauth_client.access_token.screen_name
+
+        if pdf_title:
+            self.pdftitle = pdf_title
+        else:
+            self.pdftitle = 'Tweets of %s Generated By Tweets2pdf' % self.screen_name
+
+        if pdf_name:
+            self.pdfname = pdf_name
+        else:
+            self.pdfname = 'tweets_%s.pdf' % self.screen_name
+
+        self.main_panel = main_panel
+
+        self.oauth_client      = oauth_client
+        self.elements          = []
+        self.tweets_table_data = []
+        self.pdfdoc            = SimpleDocTemplate(self.pdfname, \
+                topMargin      = 40,                             \
+                bottomMargin   = 40,                             \
+                title          = self.pdftitle,                  \
+                author         = 'tweets2pdf')
+        
+        self.pdfstyles = getSampleStyleSheet()
+        pdfmetrics.registerFont(TTFont('song', font_path))
+        fonts.addMapping('song', 0, 0, 'song')
+        fonts.addMapping('song', 0, 1, 'song')
+
+        self.text_font = self.pdfstyles['BodyText']
+        self.text_font.fontName = 'song'
+        self.img_size = pdf_img_size
+        self.tweets_type = tweets_type
+        self.tweets_count = tweets_count
+        self.tweets_current_count = 0
+        self.tweets_max_id = long(0)
+        self.tweets_min_id = long(0)
+        self.cover_table_width = 420
+        self.link_color = link_color
+        self.max_id = long(tweets_max_id)
+        self.min_id = long(tweets_min_id)
+        self.has_cover = has_cover
+
+        self.ts = [('ALIGN', (1,1), (-1,-1), 'CENTER'),
+             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+              ('LEFTPADDING', (1, 0), (-1, -1), 20),
+              ('TEXTCOLOR', (0, 0), (-1, -1), colors.red)]
+
+    def set_screen_name(self, screen_name = {}):
+        self.screen_name = screen_name
+    
+    def set_tweets_count(self, tweets_count = {}):
+        self.tweets_count = tweets_count
+
+    def _generate_grid(self, table_data = {}, screen_name = {}, grid_type = 'follower'):
+
+        cursor         = '-1'
+        COUNT_PER_LINE = 18
+        LINE_COUNT     = 3
+        count          = 0
+        grid_ok        = False
+
+        threadlist = []
+        userlist = []
+        self.cover_portrait_count = COUNT_PER_LINE * LINE_COUNT
+        self.main_panel.update_progress('0/54', 0)
+        self.main_panel.update_status(status_fetch_followers if grid_type == 'follower' else status_fetch_friends)
+        #generate profile image grid
+        while True:
+            if grid_type == 'follower':
+                # Fetching Follower...
+                response = self.oauth_client.fetch_followers(screen_name, cursor = cursor)
+                if type(response) != types.StringType:
+                    continue
+            else:
+                # Fetching Friends...
+                response = self.oauth_client.fetch_friends(screen_name, cursor = cursor)
+                if type(response) != types.StringType:
+                    continue
+
+            doc = minidom.parseString(response).documentElement
+            for user in doc.getElementsByTagName('user'):
+                userinfo = twitter.ttuser()
+                userinfo.load_user_info(user)
+                userlist.append(userinfo)
+                count += 1
+                if count == self.cover_portrait_count:
+                    grid_ok = True
+                    break
+            self.main_panel.update_progress('%s/54' % count, float(count)/float(54))
+            if count < self.cover_portrait_count:
+                self.cover_portrait_count = count
+            if grid_ok:
+                break
+            next_cursor = doc.getElementsByTagName('next_cursor')[0]
+            cursor = next_cursor.childNodes[0].data
+            if cursor == '0':
+                break
+        
+        thread_count = len(userlist)
+
+        if thread_count == 0:
+            return []
+
+        count_per_thread = len(userlist) / thread_count
+
+        self.main_panel.update_status(status_fetch_followers_profile_image \
+                if grid_type == 'follower' else status_fetch_friends_profile_image)
+        self.main_panel.update_progress('0/%d' % count, 0)
+        global mutex
+        global portrait_already_got
+        mutex = threading.Lock()
+        portrait_already_got = 0
+
+        for i in range(0, thread_count):
+            threadlist.append(
+                    threading.Thread(target = fetch_image_thread, \
+                            args = [[
+                                 userlist[i], \
+                                 self.oauth_client, \
+                                 self.cover_portrait_count, \
+                                 self.main_panel
+                                 ]]))
+        
+        for thread in threadlist:
+            thread.start()
+
+        for thread in threadlist:
+            thread.join()
+
+        follower_table_data = []
+        follower_table_row = []
+
+        line = 0
+        for userinfo in userlist:
+            profile_image = self.oauth_client.fetch_profile_image(
+                    screen_name = userinfo.screen_name,
+                    file_type = userinfo.image_type)
+            desc = Image(profile_image, 20, 20)
+
+            if line % COUNT_PER_LINE == 0 and line != 0:
+                follower_table_data.append(follower_table_row)
+                follower_table_row = []
+                line = 0
+            follower_table_row.append(desc)
+            line += 1
+
+        if len(follower_table_row) != 0:
+            follower_table_data.append(follower_table_row)
+
+        if count > 0:
+            follower_table = Table(follower_table_data, [22,])
+            table_data.append([follower_table])
+        return table_data
+
+    def generate_cover(self):
+
+        # Fetching User Information
+        self.main_panel.update_status(status_fetch_user_information)
+        response = self.oauth_client.fetch_user_information(self.screen_name)
+        if type(response) != types.StringType:
+            try:
+                if response.code == 404:
+                    self.main_panel.show_done('@%s not exist' % self.screen_name)
+                    return False
+                else:
+                    self.main_panel.show_done('Twitter API limited,please retry later.')
+                    return False
+            except:
+                self.main_panel.show_done('Twitter API limited,please retry later.')
+                return False
+
+        doc = minidom.parseString(response).documentElement
+        userinfo = twitter.ttuser()
+        userinfo.load_user_info(doc)
+        self.screen_name = userinfo.screen_name
+
+        if self.tweets_count is None or self.tweets_count == 0:
+            self.tweets_count = int(userinfo.status_count)
+
+        if not self.has_cover:
+            return True
+
+        # generate information of the user
+        table_data = []
+        table_row  = []
+        table_data.append([Spacer(0, 100)])
+        profile_image_name = self.oauth_client.fetch_profile_image(
+                screen_name = userinfo.screen_name,
+                size = 'bigger',
+                file_type = userinfo.image_type)
+        try:
+            profile_image = Image(profile_image_name, 73, 73)
+            table_row.append(profile_image)
+        except:
+            table_row.append('')
+        
+        if userinfo.url == '#':
+            desc = Paragraph(template.PROFILE_TEMPLATE_NO_URL % ( \
+                userinfo.name + '  ', \
+                userinfo.screen_name, \
+                userinfo.location, \
+                userinfo.description
+                ), self.text_font)
+        else:
+            desc = Paragraph(template.PROFILE_TEMPLATE % ( \
+                userinfo.name + '  ', \
+                userinfo.screen_name, \
+                userinfo.location, \
+                userinfo.description, \
+                userinfo.url, \
+                self.link_color, \
+                userinfo.url
+                ), self.text_font)
+
+        table_row.append(desc)
+        table_data.append(table_row)
+
+        cover_table = Table(table_data, colWidths = [80, self.cover_table_width - 120])
+        self.elements.append(cover_table)
+
+        table_data = []
+        table_data.append([ 
+                Paragraph('<b>Tweets  </b><font color="blue">%s</font>' % \
+                              userinfo.status_count, self.text_font)
+                ])
+
+        status_node = doc.getElementsByTagName('status')
+        if len(status_node) > 0:
+            statusinfo = twitter.ttstatus(self.link_color)
+            statusinfo.load_status(status_node[0])
+            table_data.append([
+                    Paragraph('<font color="grey"><b>%s: </b></font>%s' % \
+                                  ( statusinfo.create_at, statusinfo.status_text), self.text_font)
+                    ])
+            table_data.append([ Spacer(0, 10)])
+
+        table_data.append([
+            Paragraph('<b>Followers </b><font color="blue">%s</font>' % \
+                          userinfo.followers_count, self.text_font)
+            ])
+        
+        table_data = self._generate_grid(table_data, self.screen_name, 'follower')
+
+        table_data.append([
+            Paragraph('<b>Following </b><font color="blue">%s</font>' % \
+                          userinfo.friends_count, self.text_font)
+            ])
+
+        #generate information of the following account
+        table_data = self._generate_grid(table_data, self.screen_name, 'following')
+        table_data.append([Spacer(0, 20)])
+
+        cover_table = Table(table_data, colWidths = [self.cover_table_width])
+        self.elements.append(cover_table)
+        return True
+
+    def on_first_page(self, canvas, doc):   
+        canvas.saveState()   
+        #canvas.setFont('zhenhei',16)   
+        canvas.setFont('song', 9)
+        canvas.setFillColor('grey')
+        footer = 'Generated by Tweets2pdf at %s' % \
+                time.strftime('%a %b %d %H:%M:%S %Y', time.localtime())
+        footer += ' Powered by @levin108'
+        canvas.drawCentredString((PAGE_WIDTH)/2, 25, footer)
+        canvas.restoreState() 
+
+    def on_later_pages(self, canvas, doc):   
+        canvas.saveState()   
+        canvas.setFont('song', 9)   
+        canvas.drawString((PAGE_WIDTH/2)-5, 25, u"%d" % (doc.page - 1))   
+        canvas.restoreState()
+
+    def _process_status(self, status_entry = {}):
+
+        tweets_table_row = []
+
+        user = status_entry.getElementsByTagName('user')[0]
+        userinfo = twitter.ttuser()
+        userinfo.load_user_info(user)
+
+        tweets_table_row.append('')
+
+        statusinfo = twitter.ttstatus(self.link_color)
+        try:
+            statusinfo.load_status(status_entry)
+        except:
+            return
+
+        if statusinfo.tweets_id > self.tweets_max_id:
+            self.tweets_max_id = statusinfo.tweets_id
+
+        if self.tweets_min_id == 0:
+            self.tweets_min_id = statusinfo.tweets_id
+        else:
+            if statusinfo.tweets_id < self.tweets_min_id:
+                self.tweets_min_id = statusinfo.tweets_id
+
+        tweets_body = template.TWEETS_TEMPLATE % (
+                            self.link_color,      \
+                            userinfo.screen_name, \
+                            userinfo.screen_name, \
+                            userinfo.name + '  ', \
+                            statusinfo.create_at, \
+                            statusinfo.source,    \
+                            statusinfo.status_text)
+
+        try:
+            tweets_paragraph = Paragraph(tweets_body, self.text_font)
+            tweets_table_row.append(tweets_paragraph)
+            tweets_table_row.append(userinfo)
+            self.tweets_table_data.append(tweets_table_row)
+        except:
+            pass
+
+    def append_to_table(self, response = {}, retweeted = True):
+
+        try:
+            doc = minidom.parseString(response).documentElement
+        except:
+            return True
+        status_list = doc.getElementsByTagName('status')
+        if len(status_list) == 0:
+            return False
+        for status in status_list:
+            retweeted_status = status.getElementsByTagName('retweeted_status')
+            if len(retweeted_status) > 0:
+                status = retweeted_status[0]
+            self._process_status(status)
+            self.tweets_current_count += 1
+            if self.tweets_current_count == self.tweets_count:
+                return False
+        return True
+
+    def generate_body(self, sum = 200):
+        page = 1
+        sum_num = 0
+        # 'Fetching Tweets...'
+        retry_count = 0
+        self.main_panel.update_status(status_fetch_tweets)
+        while True:
+            self.main_panel.update_progress('%d/%d' % \
+                    (self.tweets_current_count, self.tweets_count), \
+                    (float(self.tweets_current_count) / float(self.tweets_count)))
+            while True:
+                if self.tweets_type == TWEETS_MY_TIMELINE or \
+                        self.tweets_type == TWEETS_OTHERS_TIMELINE:
+                    response = self.oauth_client.fetch_user_timeline( \
+                            screen_name = self.screen_name, \
+                            tweets_max_id = self.max_id, \
+                            tweets_min_id = self.min_id, \
+                            page = page)
+                elif self.tweets_type == TWEETS_RETWEETED_BY_ME:
+                    response = self.oauth_client.fetch_retweeted_by_me( \
+                            tweets_max_id = self.max_id, \
+                            tweets_min_id = self.min_id, \
+                            page = page)
+                elif self.tweets_type == TWEETS_MY_RETWEETED:
+                    response = self.oauth_client.fetch_retweets_of_me( \
+                            tweets_max_id = self.max_id, \
+                            tweets_min_id = self.min_id, \
+                            page = page)
+                elif self.tweets_type == TWEETS_MY_FAVORITES or \
+                        self.tweets_type == TWEETS_OTHERS_FAVORITES:
+                    response = self.oauth_client.fetch_favorites(self.screen_name, page)
+
+                if type(response) == types.NoneType:
+                    print 'Keyboad Interrupt'
+                    return False
+
+                if type(response) != types.StringType:
+                    try:
+                        retry_count += 1
+                        if retry_count == 10:
+                            if self.tweets_current_count == 0:
+                                return False
+                            else:
+                                return True
+                        print 'Twitter API limited.Retrying...'
+                        time.sleep(1)
+                    except:
+                        print 'Error Occured'
+                        return False
+                else:
+                    break
+
+            page += 1
+            if not self.append_to_table(response, True):
+                self.main_panel.update_progress('%d/%d' % \
+                        (self.tweets_current_count, self.tweets_count), 1)
+                break
+        return True
+
+    def _progress_cb(self, typ, value):
+        global size_est
+        global progress
+        global page
+
+        if typ == 'STARTED':
+            return
+        if typ == 'SIZE_EST':
+            size_est = value
+        if typ == 'PROGRESS':
+            progress = value
+        if typ == 'PAGE':
+            page = value
+        if typ == 'FINISHED':
+            self.main_panel.update_progress('Create PDF complete', 1)
+            self.main_panel.update_status(status_done)
+            return
+        if size_est == 0:
+            return
+        self.main_panel.update_progress( \
+                "%d%% %s pages" % (int(float(progress)/float(size_est)*100), page), \
+                float(progress)/float(size_est))
+
+
+    def dump(self):
+        if self.has_cover:
+            table_data = []
+            table_data.append([
+                Paragraph('<font color="grey" size="8">Contains %s Tweets</font>' % \
+                              self.tweets_current_count, self.text_font)
+                ])
+            table_data.append([
+                Paragraph('<font color="grey" size="8">Max Tweets ID: %s</font>' % \
+                              self.tweets_max_id, self.text_font)
+                ])
+            table_data.append([
+                Paragraph('<font color="grey" size="8">Min Tweets ID: %s</font>' % \
+                              self.tweets_min_id, self.text_font)
+                ])
+            cover_table = Table(table_data, colWidths = [self.cover_table_width])
+
+            self.elements.append(cover_table)
+            self.elements.append(PageBreak())
+
+        table_size = len(self.tweets_table_data)
+
+        #Fetching profile images...
+        self.main_panel.update_status(status_fetch_profile_image)
+        image_got = 0
+        for tweets_row in self.tweets_table_data:
+            self.main_panel.update_progress('%d/%d' % (image_got, table_size), \
+                    float(image_got)/float(table_size))
+            image_name = self.oauth_client.fetch_profile_image(
+                    screen_name = tweets_row[2].screen_name, \
+                    file_type = tweets_row[2].image_type, \
+                    size = 'bigger')
+            try:
+                image = Image(image_name, 32, 32)
+                tweets_row[0] = image
+            except:
+                pass
+            tweets_row.pop()
+            image_got += 1
+            if image_got == table_size:
+                self.main_panel.update_progress('%d/%d' % (table_size, table_size), 1)
+
+        self.main_panel.update_status(status_create_pdf)
+
+        if table_size < 10:
+            tweets_table     = Table(self.tweets_table_data, colWidths = [32, 500], style = self.ts)
+            self.elements.append(tweets_table)
+        else:
+            for i in range(table_size/10):
+                tmp_table    = self.tweets_table_data[i * 10: (i + 1) * 10]
+                tweets_table = Table(tmp_table, colWidths = [32, 500], style = self.ts)
+                self.elements.append(tweets_table)
+
+        global size_est
+        global progress
+        global page
+        size_est = 0
+        progress = 0
+        page     = 0
+
+        print 'Generating PDF...'
+
+        self.pdfdoc.setProgressCallBack(self._progress_cb)
+        self.pdfdoc.build(self.elements, onFirstPage = self.on_first_page, onLaterPages = self.on_later_pages)
+
+        print 'Generate Complete.'
+        print 'Contains %s tweets' % self.tweets_current_count
+        print 'Max Tweets ID: %s' % self.tweets_max_id
+        print 'Min Tweets ID: %s' % self.tweets_min_id
