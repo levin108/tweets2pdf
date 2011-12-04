@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# -*- coding:utf8 -*-
+# -*- coding=utf8 -*-
 """
 Copyright (C) 2011 by lwp
 levin108@gmail.com
@@ -75,6 +75,9 @@ class ttstatus:
 
     def convert_link(self, link_str = {}):
 
+        if link_str.find("http://") == -1 and link_str.find("https://") == -1:
+            return "web"
+        
         p = re.compile('rel=\".*[^\"].*\"')
         return p.sub('', link_str)
 
@@ -115,7 +118,6 @@ class ttstatus:
             p = re.compile(url_value)
             status_text = p.sub(template.URL_TEMPLATE % \
                     (url_value, self.link_color, url_value), status_text)
-            print status_text
         
         return status_text
 

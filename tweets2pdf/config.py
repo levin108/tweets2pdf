@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# -*- coding:utf8 -*-
+# -*- coding=utf8 -*-
 """
 Copyright (C) 2011 by lwp
 levin108@gmail.com

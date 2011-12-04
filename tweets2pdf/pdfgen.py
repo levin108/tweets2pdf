@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# -*- coding:utf8 -*-
+# -*- coding=utf8 -*-
 """
 Copyright (C) 2011 by lwp
 levin108@gmail.com
@@ -424,10 +424,12 @@ class tp_document():
             self.tweets_max_id = statusinfo.tweets_id
 
         if self.tweets_min_id == 0:
-            self.tweets_min_id = statusinfo.tweets_id
+            self.tweets_min_id     = statusinfo.tweets_id
         else:
             if statusinfo.tweets_id < self.tweets_min_id:
                 self.tweets_min_id = statusinfo.tweets_id
+
+        print "tweets id is : %s" % statusinfo.tweets_id
 
         tweets_body = template.TWEETS_TEMPLATE % (
                             self.link_color,      \
@@ -437,6 +439,7 @@ class tp_document():
                             statusinfo.create_at, \
                             statusinfo.source,    \
                             statusinfo.status_text)
+        print tweets_body
 
         try:
             tweets_paragraph = Paragraph(tweets_body, self.text_font)
