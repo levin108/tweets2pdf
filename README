@@ -20,11 +20,11 @@ pyGtk might has been installed, no need to install it any more.
 ----------------------
 Download the tarball from the download list:
 
-	http://code.google.com/p/tweets2pdf/downloads/list
+	https://github.com/levin108/tweets2pdf/zipball/master
 
 You can also checkout the lastest version from the repo:
 
-	hg clone https://tweets2pdf.googlecode.com/hg/ tweets2pdf 
+	git clone https://github.com/levin108/tweets2pdf.git
 
 4. HOW TO INSTALL
 -----------------
